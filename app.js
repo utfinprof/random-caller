@@ -489,18 +489,23 @@ function refreshStudentList() {
     const total = (s.correct || 0) + (s.incorrect || 0);
     const pct = total === 0 ? "—" : `${Math.round((s.correct / total) * 100)}%`;
     const rr = s.calledThisRound ? "Called this round" : "Not called yet";
-    return `
-      <div class="item" data-id="${s.id}">
-        <div class="meta">
-          <div class="name">${escapeHtml(s.name)}</div>
-          <div class="stats">C: ${s.correct || 0} • I: ${s.incorrect || 0} • Acc: ${pct} • ${rr}</div>
-        </div>
-        <div class="actions">
-          <button class="warn" data-action="edit">Edit</button>
-          <button class="danger" data-action="delete">Delete</button>
-        </div>
-      </div>
-    `;
+     return (
+  '<div class="item" data-id="' + s.id + '">' +
+    '<div class="meta">' +
+      '<div class="name">' + escapeHtml(s.name) + '</div>' +
+      '<div class="stats">' +
+        'C: ' + (s.correct || 0) +
+        ' | I: ' + (s.incorrect || 0) +
+        ' | Acc: ' + pct +
+        ' | ' + rr +
+      '</div>' +
+    '</div>' +
+    '<div class="actions">' +
+      '<button class="warn" data-action="edit">Edit</button>' +
+      '<button class="danger" data-action="delete">Delete</button>' +
+    '</div>' +
+  '</div>'
+);
   }).join("");
 
   el.studentList.querySelectorAll(".item button").forEach(btn => {
@@ -567,3 +572,4 @@ function exportJson() {
 function csvCell(value) {
   const s = String(value ?? "");
   if (/[,"\n\r]/.test(s)) return `"${s.replaceAll
+
