@@ -1,22 +1,20 @@
-/* Random Caller (local-only)
+/* Random Caller (local-only) - copy-safe version (NO template literals)
+   Spec:
    - Fair round-robin selection (no repeats until everyone has been called)
-   - Manual "Start New Round"
-   - Counts only (no attempt logs, no timestamps)
-
-   Data model:
-   {
-     version: 2,
-     classes: [
-       { id, name, students: [ { id, name, correct, incorrect, calledThisRound } ] }
-     ]
-   }
+   - Manual "Start New Round" button
+   - Counts only: correct / incorrect
+   - Manage classes + students
+   - Bulk import names (one per line or simple CSV)
+   - Export CSV + Backup JSON
 */
 
-const STORAGE_KEY = "random_caller_v2";
+"use strict";
 
-const $ = (id) => document.getElementById(id);
+var STORAGE_KEY = "random_caller_v2";
 
-const el = {
+function $(id) { return document.getElementById(id); }
+
+var el = {
   classSelect: $("classSelect"),
   manageClassSelect: $("manageClassSelect"),
   statusPill: $("statusPill"),
@@ -48,12 +46,15 @@ const el = {
 
   exportCsvBtn: $("exportCsvBtn"),
   exportJsonBtn: $("exportJsonBtn"),
-  toast: $("toast"),
+
+  toast: $("toast")
 };
 
-let state = loadState();
-let currentClassId = null;
-let pickedStudentId = null;
+var state = loadState();
+var currentClassId = null;
+var pickedStudentId = null;
+
+/* ---------- Utilities ---------- */
 
 function uuid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -65,40 +66,41 @@ function defaultState() {
     classes: [
       { id: uuid(), name: "Class 1", students: [] },
       { id: uuid(), name: "Class 2", students: [] },
-      { id: uuid(), name: "Class 3", students: [] },
+      { id: uuid(), name: "Class 3", students: [] }
     ]
   };
 }
 
-/** Migrate older saves (v1) if needed */
 function migrateIfNeeded(parsed) {
   if (!parsed || typeof parsed !== "object") return defaultState();
 
-  // v1 -> v2 migration
+  // v1 -> v2
   if (parsed.version === 1 && Array.isArray(parsed.classes)) {
-    const migrated = {
+    return {
       version: 2,
-      classes: parsed.classes.map(c => ({
-        id: c.id || uuid(),
-        name: c.name || "Class",
-        students: Array.isArray(c.students) ? c.students.map(s => ({
-          id: s.id || uuid(),
-          name: s.name || "Student",
-          correct: Number(s.correct || 0),
-          incorrect: Number(s.incorrect || 0),
-          calledThisRound: false,
-        })) : []
-      }))
+      classes: parsed.classes.map(function (c) {
+        return {
+          id: c.id || uuid(),
+          name: c.name || "Class",
+          students: Array.isArray(c.students) ? c.students.map(function (s) {
+            return {
+              id: s.id || uuid(),
+              name: s.name || "Student",
+              correct: Number(s.correct || 0),
+              incorrect: Number(s.incorrect || 0),
+              calledThisRound: false
+            };
+          }) : []
+        };
+      })
     };
-    return migrated;
   }
 
-  // already v2-ish
+  // v2 normalize
   if (parsed.version === 2 && Array.isArray(parsed.classes)) {
-    // Ensure required fields exist
-    parsed.classes.forEach(c => {
+    parsed.classes.forEach(function (c) {
       if (!Array.isArray(c.students)) c.students = [];
-      c.students.forEach(s => {
+      c.students.forEach(function (s) {
         if (typeof s.correct !== "number") s.correct = Number(s.correct || 0);
         if (typeof s.incorrect !== "number") s.incorrect = Number(s.incorrect || 0);
         if (typeof s.calledThisRound !== "boolean") s.calledThisRound = false;
@@ -111,22 +113,16 @@ function migrateIfNeeded(parsed) {
 }
 
 function loadState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  var raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) {
-    // also try old key from earlier drafts (optional)
-    const rawOld = localStorage.getItem("random_caller_v1");
+    // try old key (optional)
+    var rawOld = localStorage.getItem("random_caller_v1");
     if (!rawOld) return defaultState();
-    try {
-      return migrateIfNeeded(JSON.parse(rawOld));
-    } catch {
-      return defaultState();
-    }
+    try { return migrateIfNeeded(JSON.parse(rawOld)); }
+    catch (e) { return defaultState(); }
   }
-  try {
-    return migrateIfNeeded(JSON.parse(raw));
-  } catch {
-    return defaultState();
-  }
+  try { return migrateIfNeeded(JSON.parse(raw)); }
+  catch (e2) { return defaultState(); }
 }
 
 function saveState() {
@@ -134,18 +130,12 @@ function saveState() {
 }
 
 function toast(msg) {
+  if (!el.toast) return;
   el.toast.textContent = msg;
   el.toast.classList.add("show");
-  setTimeout(() => el.toast.classList.remove("show"), 1400);
-}
-
-function getClassById(id) {
-  return state.classes.find(c => c.id === id) || null;
-}
-
-function getCurrentClass() {
-  if (!currentClassId) return null;
-  return getClassById(currentClassId);
+  setTimeout(function () {
+    el.toast.classList.remove("show");
+  }, 1400);
 }
 
 function normalizeName(name) {
@@ -154,124 +144,96 @@ function normalizeName(name) {
 
 function escapeHtml(str) {
   return String(str)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function parseBulkInput(text) {
-  const trimmed = String(text || "").trim();
+  var trimmed = String(text || "").trim();
   if (!trimmed) return [];
 
-  const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  var lines = trimmed.split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean);
   if (lines.length === 0) return [];
 
-  const looksCsv = lines.some(l => l.includes(","));
+  var looksCsv = lines.some(function (l) { return l.indexOf(",") !== -1; });
   if (looksCsv) {
-    const rows = lines.map(l =>
-      l.split(",").map(x => x.trim().replace(/^"|"$/g, ""))
-    );
-    const start = rows[0] && /name/i.test(rows[0][0]) ? 1 : 0;
-    return rows.slice(start).map(r => r[0]).filter(Boolean).map(normalizeName).filter(Boolean);
+    var rows = lines.map(function (l) {
+      return l.split(",").map(function (x) {
+        return x.trim().replace(/^"|"$/g, "");
+      });
+    });
+    var start = (rows[0] && /name/i.test(rows[0][0])) ? 1 : 0;
+    return rows.slice(start).map(function (r) { return r[0]; }).filter(Boolean).map(normalizeName).filter(Boolean);
   }
 
   return lines.map(normalizeName).filter(Boolean);
 }
 
-/* ---------- Round-robin helpers ---------- */
+function getClassById(id) {
+  for (var i = 0; i < state.classes.length; i++) {
+    if (state.classes[i].id === id) return state.classes[i];
+  }
+  return null;
+}
+
+function getCurrentClass() {
+  if (!currentClassId) return null;
+  return getClassById(currentClassId);
+}
+
+/* ---------- Round-robin ---------- */
 
 function roundCounts(c) {
-  const total = c.students.length;
-  const called = c.students.filter(s => s.calledThisRound).length;
-  return { called, total, remaining: total - called };
+  var total = c.students.length;
+  var called = 0;
+  for (var i = 0; i < c.students.length; i++) {
+    if (c.students[i].calledThisRound) called++;
+  }
+  return { called: called, total: total, remaining: total - called };
 }
 
 function updateStatusPill() {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
+  if (!el.statusPill) return;
   if (!c) {
     el.statusPill.textContent = "No class selected";
     return;
   }
-  const { called, total, remaining } = roundCounts(c);
-  el.statusPill.textContent = `${c.name} • Round: ${called}/${total} • Remaining: ${remaining}`;
-}
-
-function setPickedStudent(student) {
-  if (!student) {
-    pickedStudentId = null;
-    el.pickedName.textContent = "—";
-    el.pickedSub.textContent = "Pick a student to begin.";
-    el.correctBtn.disabled = true;
-    el.incorrectBtn.disabled = true;
-    el.repickBtn.disabled = true;
-    return;
-  }
-
-  pickedStudentId = student.id;
-  el.pickedName.textContent = student.name;
-
-  const total = (student.correct || 0) + (student.incorrect || 0);
-  const pct = total === 0 ? "—" : `${Math.round((student.correct / total) * 100)}%`;
-  el.pickedSub.textContent = `Correct: ${student.correct || 0} • Incorrect: ${student.incorrect || 0} • Accuracy: ${pct}`;
-
-  el.correctBtn.disabled = false;
-  el.incorrectBtn.disabled = false;
-  el.repickBtn.disabled = false;
-}
-
-function refreshClassDropdowns() {
-  const options = state.classes.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
-  el.classSelect.innerHTML = options;
-  el.manageClassSelect.innerHTML = options;
-
-  if (!currentClassId || !getClassById(currentClassId)) {
-    currentClassId = state.classes[0]?.id || null;
-  }
-
-  if (currentClassId) {
-    el.classSelect.value = currentClassId;
-    el.manageClassSelect.value = currentClassId;
-  }
-
-  updateStatusPill();
-  refreshPickControls();
+  var rc = roundCounts(c);
+  el.statusPill.textContent = c.name + " | Round: " + rc.called + "/" + rc.total + " | Remaining: " + rc.remaining;
 }
 
 function refreshPickControls() {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
   if (!c) {
-    el.pickBtn.disabled = true;
-    el.newRoundBtn.disabled = true;
+    if (el.pickBtn) el.pickBtn.disabled = true;
+    if (el.newRoundBtn) el.newRoundBtn.disabled = true;
     return;
   }
 
-  const { remaining, total } = roundCounts(c);
-
-  // If class empty, disable both
-  if (total === 0) {
-    el.pickBtn.disabled = true;
-    el.newRoundBtn.disabled = true;
-    if (!pickedStudentId) {
-      el.pickedSub.textContent = "This class has no students yet.";
-    }
+  var rc = roundCounts(c);
+  if (rc.total === 0) {
+    if (el.pickBtn) el.pickBtn.disabled = true;
+    if (el.newRoundBtn) el.newRoundBtn.disabled = true;
+    if (!pickedStudentId && el.pickedSub) el.pickedSub.textContent = "This class has no students yet.";
     return;
   }
 
-  // Manual reset: when round complete, disable Pick and enable Start New Round
-  const roundComplete = remaining === 0;
-  el.pickBtn.disabled = roundComplete;
-  el.newRoundBtn.disabled = !roundComplete;
+  var roundComplete = (rc.remaining === 0);
+  if (el.pickBtn) el.pickBtn.disabled = roundComplete;
+  if (el.newRoundBtn) el.newRoundBtn.disabled = !roundComplete;
 
   if (roundComplete) {
-    el.pickedSub.textContent = "Round complete — tap “Start New Round” when you’re ready.";
     setPickedStudent(null);
+    if (el.pickedSub) el.pickedSub.textContent = "Round complete - tap Start New Round when you're ready.";
   }
 }
 
 function startNewRound() {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
   if (!c) return;
 
   if (c.students.length === 0) {
@@ -279,7 +241,9 @@ function startNewRound() {
     return;
   }
 
-  for (const s of c.students) s.calledThisRound = false;
+  for (var i = 0; i < c.students.length; i++) {
+    c.students[i].calledThisRound = false;
+  }
 
   saveState();
   toast("New round started");
@@ -288,139 +252,33 @@ function startNewRound() {
   refreshPickControls();
 }
 
-/* ---------- Manage classes ---------- */
+/* ---------- Pick / mark ---------- */
 
-function addClass(name) {
-  const clean = normalizeName(name);
-  if (!clean) return;
-
-  state.classes.push({ id: uuid(), name: clean, students: [] });
-  saveState();
-  toast("Class added");
-  refreshClassDropdowns();
-  refreshStudentList();
-  setPickedStudent(null);
-}
-
-function deleteCurrentClass() {
-  const c = getCurrentClass();
-  if (!c) return;
-
-  if (!confirm(`Delete class "${c.name}"? This removes all students & counts in it.`)) return;
-
-  state.classes = state.classes.filter(x => x.id !== c.id);
-  if (state.classes.length === 0) state = defaultState();
-
-  currentClassId = state.classes[0].id;
-  saveState();
-
-  toast("Class deleted");
-  refreshClassDropdowns();
-  refreshStudentList();
-  setPickedStudent(null);
-}
-
-/* ---------- Manage students ---------- */
-
-function addStudent(name) {
-  const c = getCurrentClass();
-  if (!c) return;
-
-  const clean = normalizeName(name);
-  if (!clean) return;
-
-  const exists = c.students.some(s => s.name.toLowerCase() === clean.toLowerCase());
-  if (exists) {
-    toast("Student already exists");
+function setPickedStudent(student) {
+  if (!student) {
+    pickedStudentId = null;
+    if (el.pickedName) el.pickedName.textContent = "-";
+    if (el.pickedSub) el.pickedSub.textContent = "Pick a student to begin.";
+    if (el.correctBtn) el.correctBtn.disabled = true;
+    if (el.incorrectBtn) el.incorrectBtn.disabled = true;
+    if (el.repickBtn) el.repickBtn.disabled = true;
     return;
   }
 
-  c.students.push({ id: uuid(), name: clean, correct: 0, incorrect: 0, calledThisRound: false });
-  saveState();
-  toast("Student added");
-  refreshStudentList();
-  updateStatusPill();
-  refreshPickControls();
+  pickedStudentId = student.id;
+  if (el.pickedName) el.pickedName.textContent = student.name;
+
+  var total = (student.correct || 0) + (student.incorrect || 0);
+  var pct = (total === 0) ? "-" : (Math.round((student.correct / total) * 100) + "%");
+  if (el.pickedSub) el.pickedSub.textContent = "Correct: " + (student.correct || 0) + " | Incorrect: " + (student.incorrect || 0) + " | Accuracy: " + pct;
+
+  if (el.correctBtn) el.correctBtn.disabled = false;
+  if (el.incorrectBtn) el.incorrectBtn.disabled = false;
+  if (el.repickBtn) el.repickBtn.disabled = false;
 }
-
-function deleteStudent(studentId) {
-  const c = getCurrentClass();
-  if (!c) return;
-
-  const s = c.students.find(x => x.id === studentId);
-  if (!s) return;
-
-  if (!confirm(`Delete "${s.name}"?`)) return;
-
-  c.students = c.students.filter(x => x.id !== studentId);
-  if (pickedStudentId === studentId) setPickedStudent(null);
-
-  saveState();
-  toast("Student deleted");
-  refreshStudentList();
-  updateStatusPill();
-  refreshPickControls();
-}
-
-function editStudent(studentId) {
-  const c = getCurrentClass();
-  if (!c) return;
-
-  const s = c.students.find(x => x.id === studentId);
-  if (!s) return;
-
-  const newName = prompt("Edit student name:", s.name);
-  if (newName === null) return;
-
-  const clean = normalizeName(newName);
-  if (!clean) return;
-
-  const exists = c.students.some(x => x.id !== s.id && x.name.toLowerCase() === clean.toLowerCase());
-  if (exists) {
-    alert("Another student already has that name.");
-    return;
-  }
-
-  s.name = clean;
-  saveState();
-  toast("Student updated");
-  refreshStudentList();
-  if (pickedStudentId === s.id) setPickedStudent(s);
-}
-
-function bulkImportStudents(text) {
-  const c = getCurrentClass();
-  if (!c) return;
-
-  const names = parseBulkInput(text);
-  if (names.length === 0) {
-    toast("Nothing to import");
-    return;
-  }
-
-  let added = 0;
-  for (const nm of names) {
-    const clean = normalizeName(nm);
-    if (!clean) continue;
-
-    const exists = c.students.some(s => s.name.toLowerCase() === clean.toLowerCase());
-    if (exists) continue;
-
-    c.students.push({ id: uuid(), name: clean, correct: 0, incorrect: 0, calledThisRound: false });
-    added++;
-  }
-
-  saveState();
-  toast(`Imported ${added} student${added === 1 ? "" : "s"}`);
-  refreshStudentList();
-  updateStatusPill();
-  refreshPickControls();
-}
-
-/* ---------- Picking + marking ---------- */
 
 function pickRandomStudent() {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
   if (!c) return;
 
   if (c.students.length === 0) {
@@ -430,19 +288,19 @@ function pickRandomStudent() {
     return;
   }
 
-  const eligible = c.students.filter(s => !s.calledThisRound);
+  var eligible = [];
+  for (var i = 0; i < c.students.length; i++) {
+    if (!c.students[i].calledThisRound) eligible.push(c.students[i]);
+  }
 
   if (eligible.length === 0) {
-    // Round complete; teacher must start new round manually
     refreshPickControls();
     toast("Round complete");
     return;
   }
 
-  const idx = Math.floor(Math.random() * eligible.length);
-  const s = eligible[idx];
-
-  // mark as called for this round
+  var idx = Math.floor(Math.random() * eligible.length);
+  var s = eligible[idx];
   s.calledThisRound = true;
 
   saveState();
@@ -453,10 +311,13 @@ function pickRandomStudent() {
 }
 
 function markAnswer(isCorrect) {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
   if (!c || !pickedStudentId) return;
 
-  const s = c.students.find(x => x.id === pickedStudentId);
+  var s = null;
+  for (var i = 0; i < c.students.length; i++) {
+    if (c.students[i].id === pickedStudentId) { s = c.students[i]; break; }
+  }
   if (!s) return;
 
   if (isCorrect) s.correct = (s.correct || 0) + 1;
@@ -468,66 +329,221 @@ function markAnswer(isCorrect) {
   refreshStudentList();
 }
 
-/* ---------- Lists / UI ---------- */
+/* ---------- Manage classes ---------- */
+
+function addClass(name) {
+  var clean = normalizeName(name);
+  if (!clean) return;
+
+  state.classes.push({ id: uuid(), name: clean, students: [] });
+  saveState();
+  toast("Class added");
+  refreshClassDropdowns();
+  refreshStudentList();
+  setPickedStudent(null);
+}
+
+function deleteCurrentClass() {
+  var c = getCurrentClass();
+  if (!c) return;
+
+  if (!confirm('Delete class "' + c.name + '"? This removes all students & counts in it.')) return;
+
+  state.classes = state.classes.filter(function (x) { return x.id !== c.id; });
+  if (state.classes.length === 0) state = defaultState();
+
+  currentClassId = state.classes[0].id;
+  saveState();
+
+  toast("Class deleted");
+  refreshClassDropdowns();
+  refreshStudentList();
+  setPickedStudent(null);
+}
+
+function refreshClassDropdowns() {
+  var options = "";
+  for (var i = 0; i < state.classes.length; i++) {
+    options += '<option value="' + state.classes[i].id + '">' + escapeHtml(state.classes[i].name) + "</option>";
+  }
+  if (el.classSelect) el.classSelect.innerHTML = options;
+  if (el.manageClassSelect) el.manageClassSelect.innerHTML = options;
+
+  if (!currentClassId || !getClassById(currentClassId)) {
+    currentClassId = state.classes[0] ? state.classes[0].id : null;
+  }
+
+  if (currentClassId) {
+    if (el.classSelect) el.classSelect.value = currentClassId;
+    if (el.manageClassSelect) el.manageClassSelect.value = currentClassId;
+  }
+
+  updateStatusPill();
+  refreshPickControls();
+}
+
+/* ---------- Manage students ---------- */
+
+function addStudent(name) {
+  var c = getCurrentClass();
+  if (!c) return;
+
+  var clean = normalizeName(name);
+  if (!clean) return;
+
+  var exists = c.students.some(function (s) { return s.name.toLowerCase() === clean.toLowerCase(); });
+  if (exists) { toast("Student already exists"); return; }
+
+  c.students.push({ id: uuid(), name: clean, correct: 0, incorrect: 0, calledThisRound: false });
+  saveState();
+  toast("Student added");
+  refreshStudentList();
+  updateStatusPill();
+  refreshPickControls();
+}
+
+function deleteStudent(studentId) {
+  var c = getCurrentClass();
+  if (!c) return;
+
+  var s = null;
+  for (var i = 0; i < c.students.length; i++) {
+    if (c.students[i].id === studentId) { s = c.students[i]; break; }
+  }
+  if (!s) return;
+
+  if (!confirm('Delete "' + s.name + '"?')) return;
+
+  c.students = c.students.filter(function (x) { return x.id !== studentId; });
+  if (pickedStudentId === studentId) setPickedStudent(null);
+
+  saveState();
+  toast("Student deleted");
+  refreshStudentList();
+  updateStatusPill();
+  refreshPickControls();
+}
+
+function editStudent(studentId) {
+  var c = getCurrentClass();
+  if (!c) return;
+
+  var s = null;
+  for (var i = 0; i < c.students.length; i++) {
+    if (c.students[i].id === studentId) { s = c.students[i]; break; }
+  }
+  if (!s) return;
+
+  var newName = prompt("Edit student name:", s.name);
+  if (newName === null) return;
+
+  var clean = normalizeName(newName);
+  if (!clean) return;
+
+  var exists = c.students.some(function (x) {
+    return x.id !== s.id && x.name.toLowerCase() === clean.toLowerCase();
+  });
+  if (exists) { alert("Another student already has that name."); return; }
+
+  s.name = clean;
+  saveState();
+  toast("Student updated");
+  refreshStudentList();
+  if (pickedStudentId === s.id) setPickedStudent(s);
+}
+
+function bulkImportStudents(text) {
+  var c = getCurrentClass();
+  if (!c) return;
+
+  var names = parseBulkInput(text);
+  if (names.length === 0) { toast("Nothing to import"); return; }
+
+  var added = 0;
+  for (var i = 0; i < names.length; i++) {
+    var clean = normalizeName(names[i]);
+    if (!clean) continue;
+
+    var exists = c.students.some(function (s) { return s.name.toLowerCase() === clean.toLowerCase(); });
+    if (exists) continue;
+
+    c.students.push({ id: uuid(), name: clean, correct: 0, incorrect: 0, calledThisRound: false });
+    added++;
+  }
+
+  saveState();
+  toast("Imported " + added + " student" + (added === 1 ? "" : "s"));
+  refreshStudentList();
+  updateStatusPill();
+  refreshPickControls();
+}
+
+/* ---------- Student list rendering ---------- */
 
 function refreshStudentList() {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
+  if (!el.studentList) return;
   el.studentList.innerHTML = "";
   if (!c) return;
 
-  const q = (el.searchInput.value || "").toLowerCase().trim();
-  const students = c.students
-    .filter(s => !q || s.name.toLowerCase().includes(q))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  var q = String(el.searchInput && el.searchInput.value ? el.searchInput.value : "").toLowerCase().trim();
+
+  var students = c.students
+    .filter(function (s) { return !q || s.name.toLowerCase().indexOf(q) !== -1; })
+    .slice()
+    .sort(function (a, b) { return a.name.localeCompare(b.name); });
 
   if (students.length === 0) {
-    el.studentList.innerHTML = `<div class="hint">No students match your search (or the class is empty).</div>`;
+    el.studentList.innerHTML = '<div class="hint">No students match your search (or the class is empty).</div>';
     return;
   }
 
-  el.studentList.innerHTML = students.map(s => {
-    const total = (s.correct || 0) + (s.incorrect || 0);
-    const pct = total === 0 ? "—" : `${Math.round((s.correct / total) * 100)}%`;
-    const rr = s.calledThisRound ? "Called this round" : "Not called yet";
-     return (
-  '<div class="item" data-id="' + s.id + '">' +
-    '<div class="meta">' +
-      '<div class="name">' + escapeHtml(s.name) + '</div>' +
-      '<div class="stats">' +
-        'C: ' + (s.correct || 0) +
-        ' | I: ' + (s.incorrect || 0) +
-        ' | Acc: ' + pct +
-        ' | ' + rr +
-      '</div>' +
-    '</div>' +
-    '<div class="actions">' +
-      '<button class="warn" data-action="edit">Edit</button>' +
-      '<button class="danger" data-action="delete">Delete</button>' +
-    '</div>' +
-  '</div>'
-);
-  }).join("");
+  var html = "";
+  for (var i = 0; i < students.length; i++) {
+    var s = students[i];
+    var total = (s.correct || 0) + (s.incorrect || 0);
+    var pct = (total === 0) ? "-" : (Math.round((s.correct / total) * 100) + "%");
+    var rr = s.calledThisRound ? "Called this round" : "Not called yet";
 
-  el.studentList.querySelectorAll(".item button").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const item = btn.closest(".item");
-      const studentId = item.getAttribute("data-id");
-      const action = btn.getAttribute("data-action");
+    html += '<div class="item" data-id="' + s.id + '">';
+    html +=   '<div class="meta">';
+    html +=     '<div class="name">' + escapeHtml(s.name) + "</div>";
+    html +=     '<div class="stats">C: ' + (s.correct || 0) + " | I: " + (s.incorrect || 0) + " | Acc: " + pct + " | " + rr + "</div>";
+    html +=   "</div>";
+    html +=   '<div class="actions">';
+    html +=     '<button class="warn" data-action="edit">Edit</button>';
+    html +=     '<button class="danger" data-action="delete">Delete</button>';
+    html +=   "</div>";
+    html += "</div>";
+  }
+
+  el.studentList.innerHTML = html;
+
+  var buttons = el.studentList.querySelectorAll(".item button");
+  for (var j = 0; j < buttons.length; j++) {
+    buttons[j].addEventListener("click", function () {
+      var btn = this;
+      var item = btn.closest(".item");
+      if (!item) return;
+      var studentId = item.getAttribute("data-id");
+      var action = btn.getAttribute("data-action");
       if (action === "delete") deleteStudent(studentId);
       if (action === "edit") editStudent(studentId);
     });
-  });
+  }
 }
 
+/* ---------- Reset stats ---------- */
+
 function resetStatsForClass() {
-  const c = getCurrentClass();
+  var c = getCurrentClass();
   if (!c) return;
 
-  if (!confirm(`Reset all Correct/Incorrect counts for "${c.name}"?`)) return;
+  if (!confirm('Reset all Correct/Incorrect counts for "' + c.name + '"?')) return;
 
-  for (const s of c.students) {
-    s.correct = 0;
-    s.incorrect = 0;
+  for (var i = 0; i < c.students.length; i++) {
+    c.students[i].correct = 0;
+    c.students[i].incorrect = 0;
   }
 
   saveState();
@@ -538,19 +554,44 @@ function resetStatsForClass() {
 
 /* ---------- Export ---------- */
 
+function csvCell(value) {
+  var s = String(value == null ? "" : value);
+  if (/[,"\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function dateStamp() {
+  var d = new Date();
+  function pad(n) { return String(n).padStart(2, "0"); }
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "_" + pad(d.getHours()) + pad(d.getMinutes());
+}
+
+function downloadFile(filename, content, mime) {
+  var blob = new Blob([content], { type: mime });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast("Exported");
+}
+
 function exportCsv() {
-  // CSV rows:
-  // Class, Student, Correct, Incorrect, Total, Accuracy
-  const rows = [];
+  var rows = [];
   rows.push(["Class", "Student", "Correct", "Incorrect", "Total", "Accuracy"].join(","));
 
-  for (const c of state.classes) {
-    const students = [...c.students].sort((a, b) => a.name.localeCompare(b.name));
-    for (const s of students) {
-      const correct = s.correct || 0;
-      const incorrect = s.incorrect || 0;
-      const total = correct + incorrect;
-      const accuracy = total === 0 ? "" : (correct / total).toFixed(4);
+  for (var i = 0; i < state.classes.length; i++) {
+    var c = state.classes[i];
+    var students = c.students.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    for (var j = 0; j < students.length; j++) {
+      var s = students[j];
+      var correct = s.correct || 0;
+      var incorrect = s.incorrect || 0;
+      var total = correct + incorrect;
+      var accuracy = (total === 0) ? "" : (correct / total).toFixed(4);
       rows.push([
         csvCell(c.name),
         csvCell(s.name),
@@ -562,14 +603,98 @@ function exportCsv() {
     }
   }
 
-  downloadFile(`random-caller-export-${dateStamp()}.csv`, rows.join("\n"), "text/csv;charset=utf-8");
+  downloadFile("random-caller-export-" + dateStamp() + ".csv", rows.join("\n"), "text/csv;charset=utf-8");
 }
 
 function exportJson() {
-  downloadFile(`random-caller-backup-${dateStamp()}.json`, JSON.stringify(state, null, 2), "application/json;charset=utf-8");
+  downloadFile("random-caller-backup-" + dateStamp() + ".json", JSON.stringify(state, null, 2), "application/json;charset=utf-8");
 }
 
-function csvCell(value) {
-  const s = String(value ?? "");
-  if (/[,"\n\r]/.test(s)) return `"${s.replaceAll
+/* ---------- Wire up ---------- */
 
+function wireEvents() {
+  if (el.classSelect) {
+    el.classSelect.addEventListener("change", function () {
+      currentClassId = el.classSelect.value;
+      if (el.manageClassSelect) el.manageClassSelect.value = currentClassId;
+      saveState();
+      updateStatusPill();
+      setPickedStudent(null);
+      refreshStudentList();
+      refreshPickControls();
+    });
+  }
+
+  if (el.manageClassSelect) {
+    el.manageClassSelect.addEventListener("change", function () {
+      currentClassId = el.manageClassSelect.value;
+      if (el.classSelect) el.classSelect.value = currentClassId;
+      saveState();
+      updateStatusPill();
+      setPickedStudent(null);
+      refreshStudentList();
+      refreshPickControls();
+    });
+  }
+
+  if (el.pickBtn) el.pickBtn.addEventListener("click", pickRandomStudent);
+  if (el.repickBtn) el.repickBtn.addEventListener("click", pickRandomStudent);
+
+  if (el.correctBtn) el.correctBtn.addEventListener("click", function () { markAnswer(true); });
+  if (el.incorrectBtn) el.incorrectBtn.addEventListener("click", function () { markAnswer(false); });
+
+  if (el.newRoundBtn) el.newRoundBtn.addEventListener("click", startNewRound);
+
+  if (el.addClassBtn) el.addClassBtn.addEventListener("click", function () {
+    addClass(el.newClassName ? el.newClassName.value : "");
+    if (el.newClassName) el.newClassName.value = "";
+  });
+
+  if (el.deleteClassBtn) el.deleteClassBtn.addEventListener("click", deleteCurrentClass);
+
+  if (el.addStudentBtn) el.addStudentBtn.addEventListener("click", function () {
+    addStudent(el.studentNameInput ? el.studentNameInput.value : "");
+    if (el.studentNameInput) el.studentNameInput.value = "";
+  });
+
+  if (el.studentNameInput) {
+    el.studentNameInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (el.addStudentBtn) el.addStudentBtn.click();
+      }
+    });
+  }
+
+  if (el.bulkImportBtn) el.bulkImportBtn.addEventListener("click", function () {
+    bulkImportStudents(el.bulkInput ? el.bulkInput.value : "");
+  });
+
+  if (el.clearBulkBtn) el.clearBulkBtn.addEventListener("click", function () {
+    if (el.bulkInput) el.bulkInput.value = "";
+    toast("Cleared");
+  });
+
+  if (el.searchInput) el.searchInput.addEventListener("input", refreshStudentList);
+
+  if (el.resetStatsBtn) el.resetStatsBtn.addEventListener("click", resetStatsForClass);
+
+  if (el.exportCsvBtn) el.exportCsvBtn.addEventListener("click", exportCsv);
+  if (el.exportJsonBtn) el.exportJsonBtn.addEventListener("click", exportJson);
+}
+
+function init() {
+  // pick first class by default
+  currentClassId = (state.classes[0] && state.classes[0].id) ? state.classes[0].id : null;
+
+  refreshClassDropdowns();
+  refreshStudentList();
+  setPickedStudent(null);
+
+  wireEvents();
+
+  updateStatusPill();
+  refreshPickControls();
+}
+
+document.addEventListener("DOMContentLoaded", init);
